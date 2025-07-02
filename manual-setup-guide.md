@@ -20,7 +20,45 @@ This guide walks you through setting up the workshop manually using the AWS Cons
 
 ---
 
-## Step 2: Create Lambda Function (8 minutes)
+## Step 2: Create IAM Roles (5 minutes)
+
+### Create Lambda Execution Role
+1. Go to **IAM** console → **Roles**
+2. Click **Create role**
+3. Select **AWS service** → **Lambda**
+4. Click **Next**
+5. Attach policies:
+   - `AWSLambdaBasicExecutionRole`
+   - `AmazonBedrockFullAccess`
+6. Role name: `workshop-lambda-role`
+7. Click **Create role**
+
+### Create EC2 Role
+1. Click **Create role** again
+2. Select **AWS service** → **EC2**
+3. Click **Next**
+4. Search and select: `AWSLambdaRole` (or create custom policy)
+5. Role name: `workshop-ec2-role`
+6. Click **Create role**
+7. Click on the role → **Add permissions** → **Create inline policy**
+8. JSON tab, paste:
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "lambda:InvokeFunction",
+            "Resource": "arn:aws:lambda:*:*:function:workshop-demo"
+        }
+    ]
+}
+```
+9. Name: `LambdaInvokePolicy` → **Create policy**
+
+---
+
+## Step 3: Create Lambda Function (5 minutes)
 
 ### Create the Function
 1. Go to **AWS Lambda** console
@@ -28,7 +66,9 @@ This guide walks you through setting up the workshop manually using the AWS Cons
 3. Choose **Author from scratch**
 4. Function name: `workshop-demo`
 5. Runtime: **Python 3.9**
-6. Click **Create function**
+6. **Change default execution role** → **Use an existing role**
+7. Select: `workshop-lambda-role`
+8. Click **Create function**
 
 ### Add the Code
 1. In the code editor, replace all content with:
@@ -85,27 +125,9 @@ def lambda_handler(event, context):
 
 2. Click **Deploy**
 
-### Add Bedrock Permissions
-1. Go to **Configuration** tab → **Permissions**
-2. Click the role name (opens IAM)
-3. Click **Add permissions** → **Attach policies**
-4. Search for `AmazonBedrockFullAccess`
-5. Select it and click **Attach policy**
-
-### Create Function URL
-1. Go to **Configuration** tab → **Function URL**
-2. Click **Create function URL**
-3. Auth type: **NONE**
-4. Configure CORS:
-   - Allow origin: `*`
-   - Allow methods: `POST, GET`
-   - Allow headers: `*`
-5. Click **Save**
-6. **Copy the Function URL** - you'll need it for EC2
-
 ---
 
-## Step 3: Launch EC2 Instance (7 minutes)
+## Step 4: Launch EC2 Instance (8 minutes)
 
 ### Launch Instance
 1. Go to **EC2** console
@@ -114,9 +136,10 @@ def lambda_handler(event, context):
 4. AMI: **Amazon Linux 2** (free tier)
 5. Instance type: **t2.micro** (free tier)
 6. Key pair: **Proceed without a key pair**
-7. Security group: **Create new**
+7. **Advanced details** → **IAM instance profile** → Select `workshop-ec2-role`
+8. Security group: **Create new**
    - Allow HTTP (port 80) from anywhere
-8. Click **Launch instance**
+9. Click **Launch instance**
 
 ### Configure Web Server
 1. Wait for instance to be **Running**
@@ -125,9 +148,10 @@ def lambda_handler(event, context):
 4. In the terminal, run these commands:
 
 ```bash
-# Install web server
+# Install web server and Python dependencies
 sudo yum update -y
-sudo yum install -y httpd
+sudo yum install -y httpd python3-pip
+sudo pip3 install boto3
 sudo systemctl start httpd
 sudo systemctl enable httpd
 
@@ -164,8 +188,6 @@ sudo tee /var/www/html/index.html > /dev/null << 'EOF'
     </div>
     
     <script>
-        const LAMBDA_URL = 'REPLACE_WITH_YOUR_LAMBDA_URL';
-        
         async function callAI() {
             const input = document.getElementById('userInput').value;
             const result = document.getElementById('result');
@@ -174,7 +196,7 @@ sudo tee /var/www/html/index.html > /dev/null << 'EOF'
             result.innerHTML = '⏳ Calling Lambda + Bedrock...';
             
             try {
-                const response = await fetch(LAMBDA_URL, {
+                const response = await fetch('/invoke-lambda', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ user_input: input })
@@ -183,19 +205,18 @@ sudo tee /var/www/html/index.html > /dev/null << 'EOF'
                 const data = await response.json();
                 
                 if (response.ok) {
-                    result.innerHTML = `
-                        <h3>✅ Success!</h3>
-                        <p><strong>You asked:</strong> ${data.user_input}</p>
-                        <p><strong>AI Response:</strong> ${data.ai_response}</p>
-                        <p><strong>Time:</strong> ${data.timestamp}</p>
-                        <hr>
-                        <small>🔄 Flow: EC2 → Lambda → Bedrock → Response</small>
-                    `;
+                    result.innerHTML = 
+                        '<h3>✅ Success!</h3>' +
+                        '<p><strong>You asked:</strong> ' + data.user_input + '</p>' +
+                        '<p><strong>AI Response:</strong> ' + data.ai_response + '</p>' +
+                        '<p><strong>Time:</strong> ' + data.timestamp + '</p>' +
+                        '<hr>' +
+                        '<small>🔄 Flow: Browser → EC2 → Lambda → Bedrock → Response</small>';
                 } else {
-                    result.innerHTML = `<h3>❌ Error:</h3><p>${data.error}</p>`;
+                    result.innerHTML = '<h3>❌ Error:</h3><p>' + (data.error || 'Unknown error') + '</p>';
                 }
             } catch (error) {
-                result.innerHTML = `<h3>❌ Network Error:</h3><p>${error.message}</p>`;
+                result.innerHTML = '<h3>❌ Network Error:</h3><p>' + error.message + '</p>';
             }
         }
     </script>
@@ -204,15 +225,78 @@ sudo tee /var/www/html/index.html > /dev/null << 'EOF'
 EOF
 ```
 
-5. **Replace the Lambda URL** in the HTML:
+5. **Create the Python CGI script**:
 ```bash
-# Replace REPLACE_WITH_YOUR_LAMBDA_URL with your actual Lambda Function URL
-sudo sed -i 's|REPLACE_WITH_YOUR_LAMBDA_URL|YOUR_ACTUAL_LAMBDA_URL_HERE|g' /var/www/html/index.html
+# Create CGI directory and script
+sudo mkdir -p /var/www/cgi-bin
+sudo tee /var/www/cgi-bin/invoke-lambda.py > /dev/null << 'PYTHON_EOF'
+#!/usr/bin/env python3
+import json
+import boto3
+import sys
+import os
+
+# Set content type
+print("Content-Type: application/json")
+print("Access-Control-Allow-Origin: *")
+print()  # Empty line required
+
+try:
+    # Read POST data
+    content_length = int(os.environ.get('CONTENT_LENGTH', 0))
+    if content_length > 0:
+        post_data = sys.stdin.read(content_length)
+        data = json.loads(post_data)
+    else:
+        data = {"user_input": "Hello AWS!"}
+    
+    # Invoke Lambda function
+    lambda_client = boto3.client('lambda')
+    
+    response = lambda_client.invoke(
+        FunctionName='workshop-demo',
+        InvocationType='RequestResponse',
+        Payload=json.dumps(data)
+    )
+    
+    # Parse Lambda response
+    lambda_response = json.loads(response['Payload'].read())
+    
+    if 'body' in lambda_response:
+        result = json.loads(lambda_response['body'])
+    else:
+        result = lambda_response
+    
+    print(json.dumps(result))
+    
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+PYTHON_EOF
+
+# Make script executable
+sudo chmod +x /var/www/cgi-bin/invoke-lambda.py
+
+# Configure Apache for CGI
+sudo tee -a /etc/httpd/conf/httpd.conf > /dev/null << 'APACHE_EOF'
+
+# Enable CGI
+LoadModule cgi_module modules/mod_cgi.so
+ScriptAlias /invoke-lambda /var/www/cgi-bin/invoke-lambda.py
+
+<Directory "/var/www/cgi-bin">
+    AllowOverride None
+    Options ExecCGI
+    Require all granted
+</Directory>
+APACHE_EOF
+
+# Restart Apache
+sudo systemctl restart httpd
 ```
 
 ---
 
-## Step 4: Test Your Workshop (2 minutes)
+## Step 5: Test Your Workshop (2 minutes)
 
 1. Go back to **EC2** console
 2. Select your instance
@@ -262,9 +346,10 @@ sudo sed -i 's|REPLACE_WITH_YOUR_LAMBDA_URL|YOUR_ACTUAL_LAMBDA_URL_HERE|g' /var/
 - Ensure model access is granted
 - Check you're using the correct region (us-east-1)
 
-### CORS errors
-- Verify Lambda Function URL has CORS configured
-- Check the Lambda URL is correctly replaced in HTML
+### CGI/Lambda errors
+- Check Apache error logs: `sudo tail -f /var/log/httpd/error_log`
+- Verify EC2 role has Lambda invoke permissions
+- Check Lambda function name matches in CGI script
 
 ---
 
