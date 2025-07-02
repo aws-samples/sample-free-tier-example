@@ -132,15 +132,18 @@ Resources:
                   bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
                   
                   response = bedrock.invoke_model(
-                      modelId='anthropic.claude-3-haiku-20240307-v1:0',
+                      modelId='amazon.titan-text-express-v1',
                       body=json.dumps({
-                          "anthropic_version": "bedrock-2023-05-31",
-                          "max_tokens": 100,
-                          "messages": [{"role": "user", "content": f"Respond briefly to: {user_input}"}]
+                          "inputText": f"You are a helpful AWS assistant. Respond briefly to: {user_input}",
+                          "textGenerationConfig": {
+                              "maxTokenCount": 100,
+                              "temperature": 0.7,
+                              "topP": 0.9
+                          }
                       })
                   )
                   
-                  ai_response = json.loads(response['body'].read())['content'][0]['text']
+                  ai_response = json.loads(response['body'].read())['results'][0]['outputText'].strip()
                   
                   # Store in DynamoDB
                   dynamodb = boto3.resource('dynamodb')

@@ -26,22 +26,20 @@ def lambda_handler(event, context):
         prompt = f"You are a helpful AWS assistant. Respond briefly and friendly to: {user_input}"
         
         response = bedrock.invoke_model(
-            modelId='anthropic.claude-3-haiku-20240307-v1:0',
+            modelId='amazon.titan-text-express-v1',
             body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 150,
-                "messages": [
-                    {
-                        "role": "user", 
-                        "content": prompt
-                    }
-                ]
+                "inputText": prompt,
+                "textGenerationConfig": {
+                    "maxTokenCount": 150,
+                    "temperature": 0.7,
+                    "topP": 0.9
+                }
             })
         )
         
         # Parse Bedrock response
         response_body = json.loads(response['body'].read())
-        ai_response = response_body['content'][0]['text']
+        ai_response = response_body['results'][0]['outputText'].strip()
         
         # Store in DynamoDB
         dynamodb = boto3.resource('dynamodb')

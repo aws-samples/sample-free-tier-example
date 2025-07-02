@@ -15,7 +15,7 @@ This guide walks you through setting up the workshop manually using the AWS Cons
 1. Go to **Amazon Bedrock** console
 2. Click **Model access** in left sidebar
 3. Click **Request model access**
-4. Find **Anthropic Claude 3 Haiku** and click **Request access**
+4. Find **Amazon Titan Text G1 - Express** and click **Request access**
 5. Wait for approval (usually instant)
 
 ---
@@ -92,15 +92,18 @@ def lambda_handler(event, context):
         bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
         
         response = bedrock.invoke_model(
-            modelId='anthropic.claude-3-haiku-20240307-v1:0',
+            modelId='amazon.titan-text-express-v1',
             body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 100,
-                "messages": [{"role": "user", "content": f"Respond briefly to: {user_input}"}]
+                "inputText": f"You are a helpful AWS assistant. Respond briefly to: {user_input}",
+                "textGenerationConfig": {
+                    "maxTokenCount": 100,
+                    "temperature": 0.7,
+                    "topP": 0.9
+                }
             })
         )
         
-        ai_response = json.loads(response['body'].read())['content'][0]['text']
+        ai_response = json.loads(response['body'].read())['results'][0]['outputText'].strip()
         
         return {
             'statusCode': 200,
