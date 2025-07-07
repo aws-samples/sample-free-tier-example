@@ -99,22 +99,31 @@ Resources:
         PasswordLength: 16
         ExcludeCharacters: '"@/\'
 
-  # Aurora Serverless Cluster
+  # Aurora Serverless v2 Cluster
   WorkshopDBCluster:
     Type: AWS::RDS::DBCluster
     Properties:
-      DBClusterIdentifier: workshop-aurora-cluster
+      DBClusterIdentifier: workshop-aurora-cluster2
       Engine: aurora-mysql
-      EngineMode: provisioned
+
       MasterUsername: !Sub '{{resolve:secretsmanager:${WorkshopDBSecret}:SecretString:username}}'
       MasterUserPassword: !Sub '{{resolve:secretsmanager:${WorkshopDBSecret}:SecretString:password}}'
       EnableHttpEndpoint: true
       ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
         MaxCapacity: 1
-        MinCapacity: 1
       Tags:
         - Key: Name
-          Value: workshop-aurora-cluster
+          Value: workshop-aurora-cluster2
+
+  # Aurora Serverless v2 DB Instance
+  WorkshopDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceClass: db.serverless
+      DBClusterIdentifier: !Ref WorkshopDBCluster
+      Engine: aurora-mysql
+      PubliclyAccessible: false
 
   # Lambda Function
   WorkshopLambda:
@@ -124,7 +133,7 @@ Resources:
       Runtime: python3.9
       Handler: index.lambda_handler
       Role: !GetAtt LambdaExecutionRole.Arn
-      Timeout: 30
+      Timeout: 60
       Environment:
         Variables:
           DB_CLUSTER_ARN: !Sub '${WorkshopDBCluster.DBClusterArn}'
@@ -176,7 +185,17 @@ Resources:
                   timestamp = datetime.now().isoformat()
                   interaction_id = str(uuid.uuid4())
                   
-                  # Create table first
+                  # Create database first
+                  try:
+                      rds_data.execute_statement(
+                          resourceArn=os.environ['DB_CLUSTER_ARN'],
+                          secretArn=os.environ['DB_SECRET_ARN'],
+                          sql=f"CREATE DATABASE IF NOT EXISTS {os.environ['DATABASE_NAME']}"
+                      )
+                  except:
+                      pass  # Database might already exist
+                  
+                  # Create table
                   rds_data.execute_statement(
                       resourceArn=os.environ['DB_CLUSTER_ARN'],
                       secretArn=os.environ['DB_SECRET_ARN'],
@@ -255,13 +274,72 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          yum update -y
-          yum install -y httpd python3-pip
+          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+          echo "Starting UserData script"
+          
+          # Wait for any existing yum processes to complete
+          echo "Waiting for yum lock to be available"
+          while pgrep yum > /dev/null; do
+              echo "Waiting for yum process to complete..."
+              sleep 5
+          done
+          
+          # Function to retry yum commands
+          retry_yum() {
+              local cmd="$1"
+              local max_attempts=5
+              local attempt=1
+              
+              while [ $attempt -le $max_attempts ]; do
+                  echo "Attempt $attempt: $cmd"
+                  if eval "$cmd"; then
+                      echo "Success: $cmd"
+                      return 0
+                  else
+                      echo "Failed attempt $attempt: $cmd"
+                      if [ $attempt -lt $max_attempts ]; then
+                          echo "Waiting 10 seconds before retry..."
+                          sleep 10
+                      fi
+                  fi
+                  attempt=$((attempt + 1))
+              done
+              
+              echo "ERROR: All attempts failed for: $cmd"
+              return 1
+          }
+          
+          # Update system with retry
+          echo "Updating system packages"
+          retry_yum "yum update -y"
+          
+          # Install Apache and Python with retry
+          echo "Installing httpd and python3-pip"
+          retry_yum "yum install -y httpd python3-pip"
+          if [ $? -ne 0 ]; then
+              echo "ERROR: Failed to install packages after all retries"
+              exit 1
+          fi
+          
+          # Install boto3
+          echo "Installing boto3"
           pip3 install boto3
+          
+          # Start Apache
+          echo "Starting Apache"
           systemctl start httpd
           systemctl enable httpd
           
+          # Check if Apache is running
+          if ! systemctl is-active --quiet httpd; then
+              echo "ERROR: Apache failed to start"
+              exit 1
+          fi
+          
+          echo "Apache started successfully"
+          
           # Create simple web page
+          echo "Creating web page"
           cat > /var/www/html/index.html << 'EOF'
           <!DOCTYPE html>
           <html>
@@ -362,6 +440,7 @@ Resources:
           EOF
           
           # Create Python CGI script to invoke Lambda
+          echo "Creating CGI script"
           mkdir -p /var/www/cgi-bin
           cat > /var/www/cgi-bin/invoke-lambda.py << 'PYTHON_EOF'
           #!/usr/bin/env python3
@@ -426,6 +505,7 @@ Resources:
           chmod +x /var/www/cgi-bin/invoke-lambda.py
           
           # Configure Apache for CGI
+          echo "Configuring Apache for CGI"
           cat >> /etc/httpd/conf/httpd.conf << 'APACHE_EOF'
           
           # Enable CGI
@@ -439,7 +519,15 @@ Resources:
           </Directory>
           APACHE_EOF
           
+          echo "Restarting Apache"
           systemctl restart httpd
+          
+          if systemctl is-active --quiet httpd; then
+              echo "SUCCESS: UserData script completed successfully"
+          else
+              echo "ERROR: Apache failed to restart"
+              exit 1
+          fi
       Tags:
         - Key: Name
           Value: workshop-web-server

@@ -138,7 +138,7 @@ def lambda_handler(event, context):
 ```
 
 2. Click **Deploy**
-3. Click Test and paste in `{"user_input":"What is AWs"}` and run a test
+3. Click Test and paste in `{"user_input":"What is AWS"}` and run a test
 
 ---
 
