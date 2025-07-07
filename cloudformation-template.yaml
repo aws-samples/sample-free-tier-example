@@ -66,7 +66,7 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
-        - PolicyName: BedrockAndDynamoDBAccess
+        - PolicyName: BedrockAndRDSAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -76,27 +76,47 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action:
-                  - dynamodb:PutItem
-                  - dynamodb:GetItem
-                  - dynamodb:Scan
-                  - dynamodb:Query
-                Resource: !GetAtt WorkshopTable.Arn
+                  - rds-data:ExecuteStatement
+                  - rds-data:BatchExecuteStatement
+                  - rds-data:BeginTransaction
+                  - rds-data:CommitTransaction
+                  - rds-data:RollbackTransaction
+                Resource: !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${WorkshopDBCluster}'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref WorkshopDBSecret
 
-  # DynamoDB Table
-  WorkshopTable:
-    Type: AWS::DynamoDB::Table
+  # Aurora DB Secret
+  WorkshopDBSecret:
+    Type: AWS::SecretsManager::Secret
     Properties:
-      TableName: workshop-interactions
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: id
-          KeyType: HASH
+      Name: workshop-aurora-secret
+      Description: Aurora database credentials
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "admin"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+
+  # Aurora Serverless Cluster
+  WorkshopDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBClusterIdentifier: workshop-aurora-cluster
+      Engine: aurora-mysql
+      EngineMode: serverless
+      MasterUsername: !Sub '{{resolve:secretsmanager:${WorkshopDBSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${WorkshopDBSecret}:SecretString:password}}'
+      EnableHttpEndpoint: true
+      ScalingConfiguration:
+        AutoPause: true
+        MaxCapacity: 1
+        MinCapacity: 1
+        SecondsUntilAutoPause: 300
       Tags:
         - Key: Name
-          Value: workshop-table
+          Value: workshop-aurora-cluster
 
   # Lambda Function
   WorkshopLambda:
@@ -109,7 +129,9 @@ Resources:
       Timeout: 30
       Environment:
         Variables:
-          TABLE_NAME: !Ref WorkshopTable
+          DB_CLUSTER_ARN: !Sub '${WorkshopDBCluster.DBClusterArn}'
+          DB_SECRET_ARN: !Ref WorkshopDBSecret
+          DATABASE_NAME: workshop
       Code:
         ZipFile: |
           import json
@@ -145,20 +167,25 @@ Resources:
                   
                   ai_response = json.loads(response['body'].read())['results'][0]['outputText'].strip()
                   
-                  # Store in DynamoDB
-                  dynamodb = boto3.resource('dynamodb')
-                  table = dynamodb.Table(os.environ['TABLE_NAME'])
+                  # Store in Aurora using RDS Data API
+                  rds_data = boto3.client('rds-data')
                   
                   timestamp = datetime.now().isoformat()
+                  interaction_id = str(uuid.uuid4())
                   
-                  table.put_item(
-                      Item={
-                          'id': str(uuid.uuid4()),
-                          'timestamp': timestamp,
-                          'user_input': user_input,
-                          'ai_response': ai_response
-                      }
-                  )
+                  # Create table if not exists and insert data
+                  sql_statements = [
+                      "CREATE TABLE IF NOT EXISTS interactions (id VARCHAR(36) PRIMARY KEY, timestamp VARCHAR(50), user_input TEXT, ai_response TEXT)",
+                      f"INSERT INTO interactions (id, timestamp, user_input, ai_response) VALUES ('{interaction_id}', '{timestamp}', '{user_input.replace("'", "\\'"))}', '{ai_response.replace("'", "\\'")}')"
+                  ]
+                  
+                  for sql in sql_statements:
+                      rds_data.execute_statement(
+                          resourceArn=os.environ['DB_CLUSTER_ARN'],
+                          secretArn=os.environ['DB_SECRET_ARN'],
+                          database=os.environ['DATABASE_NAME'],
+                          sql=sql
+                      )
                   
                   return {
                       'statusCode': 200,
@@ -170,7 +197,7 @@ Resources:
                           'message': 'Success!',
                           'ai_response': ai_response,
                           'timestamp': timestamp,
-                          'stored_in': 'DynamoDB'
+                          'stored_in': 'Aurora Serverless'
                       })
                   }
                   
@@ -248,7 +275,7 @@ Resources:
                       <strong>Lambda:</strong> Processing your requests
                   </div>
                   <div class="service-box">
-                      <strong>DynamoDB:</strong> Storing interaction data
+                      <strong>Aurora:</strong> Storing interaction data
                   </div>
                   <div class="service-box">
                       <strong>Bedrock:</strong> AI-powered responses
@@ -291,7 +318,7 @@ Resources:
                                   '<p><strong>Stored at:</strong> ' + data.timestamp + '</p>' +
                                   '<p><strong>Database:</strong> ' + data.stored_in + '</p>' +
                                   '<hr>' +
-                                  '<small>🔄 Flow: Browser → EC2 → Lambda → Bedrock + DynamoDB → Response</small>';
+                                  '<small>🔄 Flow: Browser → EC2 → Lambda → Bedrock + Aurora → Response</small>';
                           } else {
                               responseDiv.innerHTML = '<h4>❌ Error:</h4><p>' + (data.error || 'Unknown error') + '</p>';
                           }
@@ -309,7 +336,7 @@ Resources:
                           '<ul>' +
                               '<li>Triggers a Lambda function</li>' +
                               '<li>Calls Amazon Bedrock for AI response</li>' +
-                              '<li>Stores data in DynamoDB (NoSQL database)</li>' +
+                              '<li>Stores data in Aurora Serverless (MySQL database)</li>' +
                               '<li>Returns response to this EC2-hosted webpage</li>' +
                           '</ul>' +
                           '<p><em>Check AWS CloudWatch Logs to see Lambda executions!</em></p>';
@@ -407,14 +434,14 @@ Outputs:
     Description: URL of the workshop website
     Value: !Sub 'http://${WebServerInstance.PublicDnsName}'
     
-  DynamoDBTableName:
-    Description: DynamoDB table name
-    Value: !Ref WorkshopTable
+  AuroraClusterEndpoint:
+    Description: Aurora cluster endpoint
+    Value: !GetAtt WorkshopDBCluster.Endpoint.Address
     
   LambdaFunctionName:
     Description: Lambda function name
     Value: !Ref WorkshopLambda
     
-  DynamoDBTableArn:
-    Description: DynamoDB table ARN
-    Value: !GetAtt WorkshopTable.Arn
+  AuroraClusterArn:
+    Description: Aurora cluster ARN
+    Value: !Sub '${WorkshopDBCluster.DBClusterArn}'
