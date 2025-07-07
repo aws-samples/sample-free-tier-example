@@ -60,7 +60,7 @@ This guide walks you through setting up the workshop manually using the AWS Cons
 2. Click **Create role**
 3. Select **AWS service** → **EC2**
 4. Click **Next**
-5. Search and select: `LambdaInvokePolicy`
+5. Search and select: `LambdaInvokePolicyWorkshop`
 6. Click **Next**
 7. Role name: `workshop-ec2-role`
 8. Click **Create role**
@@ -79,7 +79,7 @@ This guide walks you through setting up the workshop manually using the AWS Cons
 7. Select: `workshop-lambda-role`
 8. Click **Create function**
 9. Change timeout to 1 min
-10. Click Test and paste in `{"user_input":"What is AWs"}` and run a test
+
 
 ### Add the Code
 1. In the code editor, replace all content with:
@@ -138,6 +138,7 @@ def lambda_handler(event, context):
 ```
 
 2. Click **Deploy**
+3. Click Test and paste in `{"user_input":"What is AWs"}` and run a test
 
 ---
 

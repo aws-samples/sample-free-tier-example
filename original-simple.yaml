@@ -46,7 +46,9 @@ Resources:
         ZipFile: |
           import json
           import boto3
+          import os
           from datetime import datetime
+          region = os.environ['REGION']
           
           def lambda_handler(event, context):
               try:
@@ -59,7 +61,7 @@ Resources:
                   user_input = body.get('user_input', 'Hello AWS!')
                   
                   # Call Bedrock
-                  bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+                  bedrock = boto3.client('bedrock-runtime', region_name=region)
                   
                   response = bedrock.invoke_model(
                       modelId='amazon.titan-text-express-v1',
