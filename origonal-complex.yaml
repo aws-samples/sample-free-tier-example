@@ -105,15 +105,13 @@ Resources:
     Properties:
       DBClusterIdentifier: workshop-aurora-cluster
       Engine: aurora-mysql
-      EngineMode: serverless
+      EngineMode: provisioned
       MasterUsername: !Sub '{{resolve:secretsmanager:${WorkshopDBSecret}:SecretString:username}}'
       MasterUserPassword: !Sub '{{resolve:secretsmanager:${WorkshopDBSecret}:SecretString:password}}'
       EnableHttpEndpoint: true
-      ScalingConfiguration:
-        AutoPause: true
+      ServerlessV2ScalingConfiguration:
         MaxCapacity: 1
         MinCapacity: 1
-        SecondsUntilAutoPause: 300
       Tags:
         - Key: Name
           Value: workshop-aurora-cluster
@@ -141,6 +139,11 @@ Resources:
           from datetime import datetime
           
           def lambda_handler(event, context):
+              # Initialize variables
+              user_input = 'Hello from workshop!'
+              ai_response = 'Default response'
+              timestamp = datetime.now().isoformat()
+              
               try:
                   # Parse input
                   if 'body' in event and isinstance(event['body'], str):
@@ -173,19 +176,27 @@ Resources:
                   timestamp = datetime.now().isoformat()
                   interaction_id = str(uuid.uuid4())
                   
-                  # Create table if not exists and insert data
-                  sql_statements = [
-                      "CREATE TABLE IF NOT EXISTS interactions (id VARCHAR(36) PRIMARY KEY, timestamp VARCHAR(50), user_input TEXT, ai_response TEXT)",
-                      f"INSERT INTO interactions (id, timestamp, user_input, ai_response) VALUES ('{interaction_id}', '{timestamp}', '{user_input.replace("'", "\\'"))}', '{ai_response.replace("'", "\\'")}')"
-                  ]
+                  # Create table first
+                  rds_data.execute_statement(
+                      resourceArn=os.environ['DB_CLUSTER_ARN'],
+                      secretArn=os.environ['DB_SECRET_ARN'],
+                      database=os.environ['DATABASE_NAME'],
+                      sql="CREATE TABLE IF NOT EXISTS interactions (id VARCHAR(36) PRIMARY KEY, timestamp VARCHAR(50), user_input TEXT, ai_response TEXT)"
+                  )
                   
-                  for sql in sql_statements:
-                      rds_data.execute_statement(
-                          resourceArn=os.environ['DB_CLUSTER_ARN'],
-                          secretArn=os.environ['DB_SECRET_ARN'],
-                          database=os.environ['DATABASE_NAME'],
-                          sql=sql
-                      )
+                  # Insert data using parameters to avoid SQL injection
+                  rds_data.execute_statement(
+                      resourceArn=os.environ['DB_CLUSTER_ARN'],
+                      secretArn=os.environ['DB_SECRET_ARN'],
+                      database=os.environ['DATABASE_NAME'],
+                      sql="INSERT INTO interactions (id, timestamp, user_input, ai_response) VALUES (:id, :timestamp, :user_input, :ai_response)",
+                      parameters=[
+                          {'name': 'id', 'value': {'stringValue': interaction_id}},
+                          {'name': 'timestamp', 'value': {'stringValue': timestamp}},
+                          {'name': 'user_input', 'value': {'stringValue': user_input}},
+                          {'name': 'ai_response', 'value': {'stringValue': ai_response}}
+                      ]
+                  )
                   
                   return {
                       'statusCode': 200,
@@ -208,7 +219,11 @@ Resources:
                           'Access-Control-Allow-Origin': '*',
                           'Content-Type': 'application/json'
                       },
-                      'body': json.dumps({'error': str(e)})
+                      'body': json.dumps({
+                          'error': str(e),
+                          'user_input': user_input,
+                          'timestamp': timestamp
+                      })
                   }
 
 
@@ -382,7 +397,7 @@ Resources:
                   data = {"user_input": "Hello AWS!"}
               
               # Invoke Lambda function
-              lambda_client = boto3.client('lambda', region_name='${AWS::Region}')
+              lambda_client = boto3.client('lambda', region_name='us-east-1')
               
               response = lambda_client.invoke(
                   FunctionName='${WorkshopLambda}',
