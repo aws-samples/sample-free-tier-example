@@ -60,7 +60,7 @@ This guide walks you through setting up the workshop manually using the AWS Cons
 2. Click **Create role**
 3. Select **AWS service** → **EC2**
 4. Click **Next**
-5. Search and select: `LambdaInvokePolicyWorkshop`
+5. Search and select: `LambdaInvokePolicy`
 6. Click **Next**
 7. Role name: `workshop-ec2-role`
 8. Click **Create role**
@@ -74,11 +74,12 @@ This guide walks you through setting up the workshop manually using the AWS Cons
 2. Click **Create function**
 3. Choose **Author from scratch**
 4. Function name: `workshop-demo`
-5. Runtime: **Python 3.9**
+5. Runtime: **Python 3.13**
 6. **Change default execution role** → **Use an existing role**
 7. Select: `workshop-lambda-role`
 8. Click **Create function**
 9. Change timeout to 1 min
+10. Try graviton 
 
 
 ### Add the Code
@@ -389,3 +390,7 @@ systemctl restart httpd
 - Bedrock: ~$0.01 per request
 
 **Total workshop cost: < $0.50**
+
+
+
+
