@@ -73,7 +73,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
-                Resource: '*'
+                Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-text-express-v1'
               - Effect: Allow
                 Action:
                   - rds-data:ExecuteStatement
@@ -105,7 +105,7 @@ Resources:
     Properties:
       DBClusterIdentifier: workshop-aurora-cluster2
       Engine: aurora-mysql
-
+      StorageEncrypted: true
       MasterUsername: !Sub '{{resolve:secretsmanager:${WorkshopDBSecret}:SecretString:username}}'
       MasterUserPassword: !Sub '{{resolve:secretsmanager:${WorkshopDBSecret}:SecretString:password}}'
       EnableHttpEndpoint: true
